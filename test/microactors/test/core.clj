@@ -1,0 +1,6 @@
+(ns microactors.test.core
+  (:use [microactors.core])
+  (:use [clojure.test]))
+
+(deftest replace-me ;; FIXME: write
+  (is false "No tests have been written."))
