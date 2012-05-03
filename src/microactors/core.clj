@@ -1,6 +1,8 @@
 (ns microactors.core
     (:use [clojure.core.match :only [match]])
-    (:import [java.util.concurrent Executors]))
+    (:import [java.util.concurrent Executors Executor]))
+
+(set! *warn-on-reflection* true)
 
 (comment
     
@@ -13,7 +15,7 @@
 
 )
 
-(def executor (Executors/newCachedThreadPool))
+(def ^Executor executor (Executors/newCachedThreadPool))
 
 
 (defn mini-actor [queue beh]
@@ -25,7 +27,9 @@
 
 
 (defn merge-become [actor beh args]
-    (mini-actor (:queue @actor) (apply beh args)))
+    (swap! actor 
+        (fn [old args]
+            (mini-actor (:queue old) (apply beh args))) args))
 
 
 (def run-microactor)
@@ -41,10 +45,10 @@
 (defn run-microactor [actor]
     (when-let [msg (peek (:queue @actor))]
          (doseq [r ((:beh @actor) msg)]
-             (match r 
-                 [:become beh & args]
+             (match [r] 
+                 [[:become beh & args]]
                      (merge-become actor beh args)
-                    [:send target & args]
+                 [[:send target & args]]
                      (exec-send target args)))
          (swap! actor
                (fn [old]
@@ -53,6 +57,24 @@
              (.execute executor 
                        (fn [] (run-microactor actor))))))
 
+
+(defn counterbeh [cnt]
+    (fn [msg]
+        (match msg
+            [:inc] [[:become counterbeh (inc cnt)]]
+            [:print] (println cnt))))
+
+
+(comment
+    
+    (def a (new-actor (counterbeh 0)))
+    (exec-send a ["beh"])
+    
+    (time (dotimes [x 10000000] (exec-send a [:inc])))
+    (exec-send a [:print])
+    
+    
+    )
               
                       
 
