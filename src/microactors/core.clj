@@ -64,6 +64,25 @@
             [:inc] [[:become counterbeh (inc cnt)]]
             [:print] (println cnt))))
 
+(defbeh counterbeh [cnt]
+    ([:inc] (become counterbeh (inc cnt))
+            (become counterbeh (inc cnt)))
+    ([:print] (println cnt)))
+
+(defmacro become [& args]
+    `[:become ~@args])
+
+(defn debug [x]
+    (println x)
+    x)
+
+(defmacro defbeh
+    [bname args & patterns]
+    (let [pats (reduce concat (map (fn [x] `(~(first x) (vector ~@(rest x)))) patterns))]
+    (debug `(defn ~bname ~args
+        (fn [msg#]
+            (clojure.core.match/match msg# ~@pats))))))
+
 
 (comment
     
