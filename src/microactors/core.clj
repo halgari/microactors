@@ -30,6 +30,16 @@
 (def ^Executor executor (Executors/newCachedThreadPool))
 
 
+(defprotocol IMsgBox
+    """Defines a message protocol for objects that can receive messages"""
+    (post-msg [this msg]))
+
+(defprotocol IMicroActor
+    """Common functions defined by microactors"""
+    (behavior [this] "Gets the current behavior")
+    (top-message [this] "Gets the top most item in the message box")
+    (set-behavior! [this beh] "Sets the current behavior"))
+
 ;;  This class hold all the data we need for a micro actor. Our actors
 ;;  consist purely of a queue and the curent behavior. We will then wrap these
 ;;  in an AtomicReference for thread safety. Assuming the pointer to queue, beh
@@ -55,19 +65,14 @@
     
     (assoc [this k v]
         (cond (= k :queue) (MicroActor. v beh)
-              (= k :beh) (MicroActor. queue v))))
+              (= k :beh) (MicroActor. queue v)))
+    
+    IMsgBox
+    ([this msg] (assoc this :queue (conj queue msg))))
 
 (defn micro-actor [queue beh]
     (MicroActor. queue beh))
 
-(defn aref [init]
-    """Creates a new atomic reference. These are much smaller than atoms due to 
-    the lack of validators, metadata, etc"""
-    (AtomicReference. init))
-
-(defn aref-get [^AtomicReference r]
-    """ Reads the current value of the atomic reference """
-    (.get r))
 
 (defn aref-swap! [^AtomicReference r f & args]
     """ Atomically updates the ref with the result of (apply f state args).
@@ -78,6 +83,54 @@
                 (if (.compareAndSet r oval nval)
                     oval
                     (recur)))))
+
+(defn- conj-swap! [r itm]
+    (aref-swap! #(conj % itm)))
+
+(defn- pop-swap! [r]
+    (aref-swap! #(pop %)))
+
+
+;; A type to hold our actor data
+(deftype MicroActor [^AtomicReference queue ^{:volatile-mutable true} beh]
+    IMsgBox
+    (post-msg [this msg]
+        (let [old (conj-swap! queue msg)]
+             (when (= (count old) 0)
+                   (.execute executor this))))
+    
+    IMicroActor
+    (behavior [this] beh)
+    (top-message [this] (first (.get queue)))
+    (set-behavior! [this newbeh] (set! beh newbeh))
+    
+    java.lang.Runnable
+    (run [this]
+       (when-let [msg (peek (.get queue))]
+         (doseq [r (beh msg)]
+             (match [r] 
+                 [[:become newbeh & args]]
+                     (set-behavior! beh (apply newbeh args))
+                 [[:post target & args]]
+                     (post-msg target args)))
+         (when (> (pop-swap! queue) 1)
+               (.execute executor this))))) 
+
+
+
+(defn aref [init]
+    """Creates a new atomic reference. These are much smaller than atoms due to 
+    the lack of validators, metadata, etc"""
+    (ARef. (AtomicReference. init)))
+
+
+
+;; Make AtomicReference pass IMsgQueue requests
+(extend IMsgBox
+    AtomicReference
+    {:post-msg (fn post-msg [this msg]
+                      (aref-swap! #(post-msg % msg)))})
+
 
 (defn new-actor [beh]
     (aref (MicroActor. (clojure.lang.PersistentQueue/EMPTY) beh)))
