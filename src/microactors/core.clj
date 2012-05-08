@@ -40,40 +40,6 @@
     (top-message [this] "Gets the top most item in the message box")
     (set-behavior! [this beh] "Sets the current behavior"))
 
-;;  This class hold all the data we need for a micro actor. Our actors
-;;  consist purely of a queue and the curent behavior. We will then wrap these
-;;  in an AtomicReference for thread safety. Assuming the pointer to queue, beh
-;;  and the reference are all 4 bytes. We clock in at about 12 bytes as the size
-;;  of a micro actor. We're also defining some helper functions to make this look
-;;  like a map, without the memory overhead of defrecord.
-(deftype MicroActor 
-
-    [queue beh]
-
-    clojure.lang.Associative
-    (valAt 
-        [this k]
-         (.valAt this k nil))
-    
-    (valAt [this k d]
-         (cond (= k :queue) queue
-               (= k :beh) beh
-               :default d))
-    
-    (containsKey [this k]
-        (or (= k :queue) (= k beh)))
-    
-    (assoc [this k v]
-        (cond (= k :queue) (MicroActor. v beh)
-              (= k :beh) (MicroActor. queue v)))
-    
-    IMsgBox
-    ([this msg] (assoc this :queue (conj queue msg))))
-
-(defn micro-actor [queue beh]
-    (MicroActor. queue beh))
-
-
 (defn aref-swap! [^AtomicReference r f & args]
     """ Atomically updates the ref with the result of (apply f state args).
         f may be invoked several times. Returns the old value."""
@@ -85,10 +51,10 @@
                     (recur)))))
 
 (defn- conj-swap! [r itm]
-    (aref-swap! #(conj % itm)))
+    (aref-swap! r #(conj % itm)))
 
 (defn- pop-swap! [r]
-    (aref-swap! #(pop %)))
+    (aref-swap! r #(pop %)))
 
 
 ;; A type to hold our actor data
@@ -110,63 +76,14 @@
          (doseq [r (beh msg)]
              (match [r] 
                  [[:become newbeh & args]]
-                     (set-behavior! beh (apply newbeh args))
+                     (set-behavior! this (apply newbeh args))
                  [[:post target & args]]
                      (post-msg target args)))
-         (when (> (pop-swap! queue) 1)
+         (when (> (count (pop-swap! queue)) 1)
                (.execute executor this))))) 
 
-
-
-(defn aref [init]
-    """Creates a new atomic reference. These are much smaller than atoms due to 
-    the lack of validators, metadata, etc"""
-    (ARef. (AtomicReference. init)))
-
-
-
-;; Make AtomicReference pass IMsgQueue requests
-(extend IMsgBox
-    AtomicReference
-    {:post-msg (fn post-msg [this msg]
-                      (aref-swap! #(post-msg % msg)))})
-
-
 (defn new-actor [beh]
-    (aref (MicroActor. (clojure.lang.PersistentQueue/EMPTY) beh)))
-
-
-(defn merge-become [actor beh args]
-    (aref-swap! actor 
-        (fn [old args]
-            (assoc old :beh (apply beh args))) args))
-
-
-(def run-microactor)
-
-(defn exec-send [target args]
-    (let [msg (peek (:queue (aref-get target)))]
-         (aref-swap! target
-                (fn [old] (assoc old :queue (conj (:queue old) args))))
-         (when-not msg
-             (.execute executor 
-                       (fn [] (run-microactor target))))))
-
-(defn run-microactor [actor]
-    (when-let [msg (peek (:queue (aref-get actor)))]
-         (doseq [r ((:beh (aref-get actor)) msg)]
-             (match [r] 
-                 [[:become beh & args]]
-                     (merge-become actor beh args)
-                 [[:post target & args]]
-                     (exec-send target args)))
-         (aref-swap! actor
-               (fn [old]
-                   (assoc old :queue (pop (:queue old)))))
-         (when (peek (:queue (aref-get actor)))
-             (.execute executor 
-                       (fn [] (run-microactor actor))))))
-
+    (MicroActor. (AtomicReference. (clojure.lang.PersistentQueue/EMPTY)) beh))
 
 
 (defmacro become [& args]
@@ -182,9 +99,14 @@
 (defmacro defbeh
     [bname args & patterns]
     (let [pats (reduce concat (map (fn [x] `(~(first x) (vector ~@(rest x)))) patterns))]
-    (debug `(defn ~bname ~args
+    `(defn ~bname ~args
         (fn [msg#]
-            (clojure.core.match/match msg# ~@pats))))))
+            (clojure.core.match/match msg# ~@pats)))))
+
+
+(extend clojure.lang.IFn
+    IMsgBox
+    {:post-msg (fn [this msg] (this msg))})
 
 
 (comment
@@ -194,13 +116,16 @@
             (become counterbeh (inc cnt)))
     ([:print] (println cnt)))
     
+    
     (def a (new-actor (counterbeh 0)))
+    (post-msg a [:inc])
+    (post-msg a [:print])
     (exec-send a ["beh"])
     
     (time (dotimes [x 10000000] (exec-send a [:inc])))
     
         (time (do (dotimes [x 100] (exec-send a [:inc])) (exec-send a [:print])))
-    (exec-send a [:print])
+    (post-msg a [:print])
     
     (def v (vec (for [x (range 1000000)] (new-actor (counterbeh 0)))))
     
