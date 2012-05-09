@@ -1,7 +1,8 @@
 (ns microactors.core
     (:use [clojure.core.match :only [match]])
     (:import [java.util.concurrent Executors Executor]
-             [java.util.concurrent.atomic AtomicReference]))
+             [java.util.concurrent.atomic AtomicReference]
+             [clojure.lang PersistentQueue]))
 
 (set! *warn-on-reflection* true)
 
@@ -40,18 +41,19 @@
     (top-message [this] "Gets the top most item in the message box")
     (set-behavior! [this beh] "Sets the current behavior"))
 
-(defn aref-swap! [^AtomicReference r f & args]
-    """ Atomically updates the ref with the result of (apply f state args).
+(defn aref-swap! [^AtomicReference r f]
+    """ Atomically updates the ref with the result of (f state).
         f may be invoked several times. Returns the old value."""
     (loop []
           (let [oval (.get r)
-                nval (apply f oval args)]
+                nval (f oval)]
                 (if (.compareAndSet r oval nval)
                     oval
                     (recur)))))
 
 (defn- conj-swap! [r itm]
-    (aref-swap! r #(conj % itm)))
+    (aref-swap! r #(let [old (if (= ::working %) PersistentQueue/EMPTY %)]
+                             (conj old itm))))
 
 (defn- pop-swap! [r]
     (aref-swap! r #(pop %)))
@@ -62,7 +64,7 @@
     IMsgBox
     (post-msg [this msg]
         (let [old (conj-swap! queue msg)]
-             (when (= (count old) 0)
+             (when (and (not (= ::working old)) (= (count old) 0))
                    (.execute executor this))))
     
     IMicroActor
@@ -72,25 +74,34 @@
     
     java.lang.Runnable
     (run [this]
-       (when-let [msg (peek (.get queue))]
-         (doseq [r (beh msg)]
-             (match [r] 
-                 [[:become newbeh & args]]
-                     (set-behavior! this (apply newbeh args))
-                 [[:post target & args]]
-                     (post-msg target args)))
-         (when (> (count (pop-swap! queue)) 1)
-               (.execute executor this))))) 
+       (let [msgs (aref-swap! queue (fn [x] identity ::working))]
+         (when (> (count msgs) 0)
+               (doseq [msg msgs]
+                 (doseq [r (beh msg)]
+                     (when (vector? r)
+                         (let [tp (nth r 0)]
+                             (cond (= tp :become)
+                                    (set-behavior! this (nth r 1))
+                                   (= tp :post)
+                                    (post-msg (nth r 1) (nth r 2))))))))
+         (let [oval (.get queue)]
+              (when-not (and (= oval ::working)
+                             (.compareAndSet queue oval PersistentQueue/EMPTY))
+                        (recur))))))
+                      
+    ;;     (when (> (count (pop-swap! queue)) 1)
+    ;;           (.execute executor this))))
+    ;;)
 
 (defn new-actor [beh]
     (MicroActor. (AtomicReference. (clojure.lang.PersistentQueue/EMPTY)) beh))
 
 
-(defmacro become [& args]
-    `[:become ~@args])
+(defmacro become [f]
+    `[:become ~f])
 
-(defmacro post [& args]
-    `[:post ~@args])
+(defmacro post [target & args]
+    `[:post ~target ~args])
 
 (defn debug [x]
     (println x)

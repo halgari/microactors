@@ -5,7 +5,7 @@
 (defbeh counterbeh [cont cur]
     ([:inc] (if (>= (inc cur) 3) 
              (post-msg cont cur)
-             (become counterbeh cont (inc cur)))))
+             (become (counterbeh cont (inc cur))))))
 
 (deftest replace-me 
   (let [prom (promise)
