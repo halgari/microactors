@@ -33,7 +33,7 @@
 
 (defprotocol IMsgBox
     """Defines a message protocol for objects that can receive messages"""
-    (post-msg [this msg]))
+    (post [this msg]))
 
 (defprotocol IMicroActor
     """Common functions defined by microactors"""
@@ -68,7 +68,7 @@
 ;; A type to hold our actor data
 (deftype MicroActor [^AtomicReference queue ^{:volatile-mutable true} beh]
     IMsgBox
-    (post-msg [this msg]
+    (post [this msg]
         (let [old (conj-swap! queue msg)]
              (when (and (not (= ::working old)) (= (count old) 0))
                    (.execute executor this))))
@@ -80,23 +80,14 @@
     
     java.lang.Runnable
     (run [this]
-       (let [msgs (aref-swap! queue (fn [x] identity ::working))
-             proc-fn (fn proc-fn [r tp]
-                         (cond (= tp :become)
-                                (set-behavior! this (nth r 1))
-                               (= tp :post)
-                                (post-msg (nth r 1) (nth r 2))
-                               (vector? tp)
-                                (proc-fn tp (nth tp 0))))]
+       (let [msgs (aref-swap! queue (fn [x] identity ::working))]
          (when (> (count msgs) 0)
                (doseq [msg msgs]
-                 (dovec [r (beh msg)]
-                     (when (vector? r)
-                         (proc-fn r (nth r 0))))))
+                 (beh this msg))
          (let [oval (.get queue)]
               (when-not (and (= oval ::working)
                              (.compareAndSet queue oval PersistentQueue/EMPTY))
-                        (recur))))))
+                        (recur)))))))
                       
     ;;     (when (> (count (pop-swap! queue)) 1)
     ;;           (.execute executor this))))
@@ -105,41 +96,38 @@
 (defn new-actor [beh]
     (MicroActor. (AtomicReference. (clojure.lang.PersistentQueue/EMPTY)) beh))
 
+(defmacro create [[nm const] & body]
+    `(let [~nm (new-actor ~const)]
+          ~@body))
+
 (defn debug [x]
     (println x)
     x)
 
-(defmacro become [f]
-    `[:become ~f])
 
-(defmacro post [target & args]
-   (debug `[:post ~target [~@args]]))
-
-(defmacro vdo [& args]
-    (debug `[ ~@args ]))
-
-
+(defmacro become [beh]
+    `(set-behavior! ~'self ~beh))
 
 (defmacro defbeh
     [bname args & patterns]
     (let [pats (reduce concat (map (fn [x] `(~(first x) (vector ~@(rest x)))) patterns))]
     `(defn ~bname ~args
-        (fn [msg#]
+        (fn [~'self msg#]
             (clojure.core.match/match msg# ~@pats)))))
 
 
 (extend clojure.lang.IFn
     IMsgBox
-    {:post-msg (fn [this msg] (this msg))})
+    {:post (fn [this msg] (this msg))})
 
 
 (defbeh gather-beh [ksel trigger cont reset mp]
     ([msg] (let [mp (assoc mp (ksel msg) msg)]
                 (if (trigger mp)
-                    (vdo (post cont mp)
-                         (if reset
-                             (become (gather-beh ksel trigger cont reset {}))
-                             (become (gather-beh ksel trigger cont reset mp))))
+                    (do (post cont mp)
+                        (if reset
+                            (become (gather-beh ksel trigger cont reset {}))
+                            (become (gather-beh ksel trigger cont reset mp))))
                     (become (gather-beh ksel trigger cont reset mp))))))
 
 (defn gather 
@@ -156,9 +144,6 @@
     ([coll] (create [newa (const-fn (first coll))]
                     (send newa (first coll)))
             (post self (next coll))))
-
-(defn post! [a & msgs]
-    (post-msg a (vec msgs)))
 
 (defn scatter
     "A form of pmap. Given a seq of items, creates a set of agents using the behaviors
