@@ -58,6 +58,12 @@
 (defn- pop-swap! [r]
     (aref-swap! r #(pop %)))
 
+(defmacro dovec [[bind vec] & body]
+    `(let [vec# ~vec]
+        (dotimes [x# (count vec#)]
+            (let [~bind (nth vec# x#)]
+                 ~@body))))
+
 
 ;; A type to hold our actor data
 (deftype MicroActor [^AtomicReference queue ^{:volatile-mutable true} beh]
@@ -74,16 +80,19 @@
     
     java.lang.Runnable
     (run [this]
-       (let [msgs (aref-swap! queue (fn [x] identity ::working))]
+       (let [msgs (aref-swap! queue (fn [x] identity ::working))
+             proc-fn (fn proc-fn [r tp]
+                         (cond (= tp :become)
+                                (set-behavior! this (nth r 1))
+                               (= tp :post)
+                                (post-msg (nth r 1) (nth r 2))
+                               (vector? tp)
+                                (proc-fn tp (nth tp 0))))]
          (when (> (count msgs) 0)
                (doseq [msg msgs]
-                 (doseq [r (beh msg)]
+                 (dovec [r (beh msg)]
                      (when (vector? r)
-                         (let [tp (nth r 0)]
-                             (cond (= tp :become)
-                                    (set-behavior! this (nth r 1))
-                                   (= tp :post)
-                                    (post-msg (nth r 1) (nth r 2))))))))
+                         (proc-fn r (nth r 0))))))
          (let [oval (.get queue)]
               (when-not (and (= oval ::working)
                              (.compareAndSet queue oval PersistentQueue/EMPTY))
@@ -96,16 +105,20 @@
 (defn new-actor [beh]
     (MicroActor. (AtomicReference. (clojure.lang.PersistentQueue/EMPTY)) beh))
 
+(defn debug [x]
+    (println x)
+    x)
 
 (defmacro become [f]
     `[:become ~f])
 
 (defmacro post [target & args]
-    `[:post ~target ~args])
+   (debug `[:post ~target [~@args]]))
 
-(defn debug [x]
-    (println x)
-    x)
+(defmacro vdo [& args]
+    (debug `[ ~@args ]))
+
+
 
 (defmacro defbeh
     [bname args & patterns]
@@ -119,6 +132,42 @@
     IMsgBox
     {:post-msg (fn [this msg] (this msg))})
 
+
+(defbeh gather-beh [ksel trigger cont reset mp]
+    ([msg] (let [mp (assoc mp (ksel msg) msg)]
+                (if (trigger mp)
+                    (vdo (post cont mp)
+                         (if reset
+                             (become (gather-beh ksel trigger cont reset {}))
+                             (become (gather-beh ksel trigger cont reset mp))))
+                    (become (gather-beh ksel trigger cont reset mp))))))
+
+(defn gather 
+    "Creates an actor that gathers a set of results
+    the ksel selects a key from the input messages. Every time a message
+    is received the trigger fn is executed against it. When trigger returns
+    true, the result is sent to cont. If reset is true, the contents of this
+    actor will be reset every time trigger evalutates to true"
+    [ksel trigger cont reset]
+    (gather-beh ksel trigger cont reset {}))
+(comment 
+    
+(defbeh scatter-beh [const-fn]
+    ([coll] (create [newa (const-fn (first coll))]
+                    (send newa (first coll)))
+            (post self (next coll))))
+
+(defn post! [a & msgs]
+    (post-msg a (vec msgs)))
+
+(defn scatter
+    "A form of pmap. Given a seq of items, creates a set of agents using the behaviors
+    returned by apply const-fn to each item. Each actor is then sent the contents of the
+    corrisponding seq. This is basically the opposite of gather"
+    [const-fn coll]
+    (let [newa (new-actor (scatter-beh const-fn))]
+         (post! newa coll)))
+)
 
 (comment
     
