@@ -69,7 +69,6 @@
 (deftype MicroActor [^AtomicReference queue ^{:volatile-mutable true} beh]
     IMsgBox
     (post-msg [this msg]
-        (println msg)
         (let [old (conj-swap! queue msg)]
              (when (and (not (= ::working old)) (= (count old) 0))
                    (.execute executor this))))

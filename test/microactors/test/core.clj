@@ -4,7 +4,7 @@
 
 (defbeh counterbeh [cont cur]
     ([:inc] (if (>= (inc cur) 3) 
-             (post cont cur)
+             (post cont (inc cur))
              (become (counterbeh cont (inc cur))))))
 
 (defbeh identitybeh [cont]
@@ -23,7 +23,7 @@
        (post actor :inc)
        (post actor :inc)
        (post actor :inc)
-       (is (= (debug @prom) 3))
+       (is (= @prom [3]))
        ))       
   
 (comment

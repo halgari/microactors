@@ -14,8 +14,8 @@
 (time (let [f (promise)
             a (new-actor (counterbeh 0 f))]
            (dotimes [x 10000000]
-                    (post a [:inc]))
-           (post a [:print])
+                    (post a :inc))
+           (post a :print)
             @f))
 
 )
