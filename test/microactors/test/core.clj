@@ -7,15 +7,26 @@
              (post cont cur)
              (become (counterbeh cont (inc cur))))))
 
-(deftest replace-me 
+(defbeh identitybeh [cont]
+    ([msg] (post cont msg)))
+
+(def prom (promise))
+(def actor (new-actor (counterbeh prom 0)))
+(post actor :inc)
+(post actor :inc)
+(post actor :inc)
+@prom
+
+(deftest basic-tests 
   (let [prom (promise)
         actor (new-actor (counterbeh prom 0))]
-       (post actor [:inc])
-       (post actor [:inc])
-       (post actor [:inc])
-       (is @prom 3)))       
+       (post actor :inc)
+       (post actor :inc)
+       (post actor :inc)
+       (is (= (debug @prom) 3))
+       ))       
   
-
+(comment
 (deftest gather-tests-with-reset-true
   (let [prom (promise)
         gth (new-actor (gather :idx #(= (count %) 3) prom true))]
@@ -35,4 +46,15 @@
        (is @prom {1 {:idx 1}
                   2 {:idx 2}
                   3 {:idx 3}})))
-       
+
+(deftest scatter-tests
+    (let [coll (range 10)
+          prom (promise)
+          gth (new-actor (gather :idx #(debug (= (count %) (count coll))) prom false))
+          b (beh tmp [itm]
+              ([msg] (post gth {:idx itm})))]
+         (scatter b coll)
+         ;(is (vals @prom) coll)
+    ))
+          
+       )

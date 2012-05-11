@@ -33,7 +33,7 @@
 
 (defprotocol IMsgBox
     """Defines a message protocol for objects that can receive messages"""
-    (post [this msg]))
+    (post-msg [this msg]))
 
 (defprotocol IMicroActor
     """Common functions defined by microactors"""
@@ -68,7 +68,8 @@
 ;; A type to hold our actor data
 (deftype MicroActor [^AtomicReference queue ^{:volatile-mutable true} beh]
     IMsgBox
-    (post [this msg]
+    (post-msg [this msg]
+        (println msg)
         (let [old (conj-swap! queue msg)]
              (when (and (not (= ::working old)) (= (count old) 0))
                    (.execute executor this))))
@@ -108,17 +109,24 @@
 (defmacro become [beh]
     `(set-behavior! ~'self ~beh))
 
+(defmacro post [a & args]
+    `(post-msg ~a [~@args]))
+
+(defmacro beh
+    [bname args & patterns]
+    (let [pats (reduce concat (map (fn [x] `(~(first x) ~@(rest x))) patterns))]
+    `(fn ~bname ~args
+        (fn [~'self msg#]
+            (clojure.core.match/match msg# ~@pats)))))   
+
 (defmacro defbeh
     [bname args & patterns]
-    (let [pats (reduce concat (map (fn [x] `(~(first x) (vector ~@(rest x)))) patterns))]
-    `(defn ~bname ~args
-        (fn [~'self msg#]
-            (clojure.core.match/match msg# ~@pats)))))
+    `(def ~bname (beh ~bname ~args ~@patterns)))
 
 
 (extend clojure.lang.IFn
     IMsgBox
-    {:post (fn [this msg] (this msg))})
+    {:post-msg (fn [this msg] (this msg))})
 
 
 (defbeh gather-beh [ksel trigger cont reset mp]
@@ -138,21 +146,20 @@
     actor will be reset every time trigger evalutates to true"
     [ksel trigger cont reset]
     (gather-beh ksel trigger cont reset {}))
-(comment 
-    
+
 (defbeh scatter-beh [const-fn]
-    ([coll] (create [newa (const-fn (first coll))]
-                    (send newa (first coll)))
-            (post self (next coll))))
+    ([coll] (when coll
+                 (create [newa (const-fn (first coll))]
+                         (post newa (first coll)))
+                 (post self (next coll)))))
 
 (defn scatter
     "A form of pmap. Given a seq of items, creates a set of agents using the behaviors
-    returned by apply const-fn to each item. Each actor is then sent the contents of the
+    returned by const-fn to each item. Each actor is then sent the contents of the
     corrisponding seq. This is basically the opposite of gather"
     [const-fn coll]
-    (let [newa (new-actor (scatter-beh const-fn))]
-         (post! newa coll)))
-)
+    (create [newa (scatter-beh const-fn)]
+         (post newa coll)))
 
 (comment
     
